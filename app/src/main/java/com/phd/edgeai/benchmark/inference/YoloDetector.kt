@@ -12,18 +12,19 @@ import java.nio.FloatBuffer
 import kotlin.math.max
 import kotlin.math.min
 
-data class RawDetection(val boundingBox: RectF, val confidence: Float)
+data class RawDetection(val boundingBox: RectF, val confidence: Float, val classId: Int, val label: String)
 
 /**
  * Wraps a single-stage YOLO ONNX export (Ultralytics detect head: output shape
- * [1, 4+numClasses, numAnchors], no separate objectness channel). Reused for both the ROI stage
- * (cement_roi_model) and the PA stage (pa_detector) in Architecture A, and standalone for
- * Architecture B -- each call site supplies its own conf/iou thresholds and maxDetections to
- * match the reference pipeline (ROI: conf 0.25, iou 0.5, top-1; PA: conf 0.10, iou 0.5, up to 100).
+ * [1, 4+numClasses, numAnchors], no separate objectness channel). Used for the ROI stage
+ * (cement_roi_model), the PA stage (pa_detector), and Architecture B's independently-trained
+ * YOLO-nano model -- each call site supplies its own labels, conf/iou thresholds, and
+ * maxDetections (ROI: conf 0.25, iou 0.5, top-1; PA: conf 0.10, iou 0.5, up to 100).
  */
 class YoloDetector(
     context: Context,
     modelAssetPath: String,
+    private val labels: List<String> = listOf("object"),
     private val inputSize: Int = 640,
     private val confThreshold: Float = 0.25f,
     private val iouThreshold: Float = 0.5f
@@ -105,10 +106,14 @@ class YoloDetector(
 
         val candidates = mutableListOf<RawDetection>()
         for (i in 0 until numAnchors) {
+            var bestClassId = -1
             var bestScore = 0f
             for (c in 0 until numClasses) {
                 val score = predictions[4 + c][i]
-                if (score > bestScore) bestScore = score
+                if (score > bestScore) {
+                    bestScore = score
+                    bestClassId = c
+                }
             }
             if (bestScore < confThreshold) continue
 
@@ -130,7 +135,9 @@ class YoloDetector(
                         right.coerceIn(0f, origWidth.toFloat()),
                         bottom.coerceIn(0f, origHeight.toFloat())
                     ),
-                    confidence = bestScore
+                    confidence = bestScore,
+                    classId = bestClassId,
+                    label = labels.getOrElse(bestClassId) { "class_$bestClassId" }
                 )
             )
         }

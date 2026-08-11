@@ -6,10 +6,11 @@ two vision pipelines, and logs every frame to a CSV for offline analysis.
 
 ## Architectures
 
-Both reuse the same ROI YOLO model; Architecture A adds the three downstream cascade stages.
+The app exists to compare these two independently-trained pipelines' on-device behavior directly.
 
-- **Architecture B (single-stage baseline):** camera frame -> ROI YOLO -> all boxes above
-  threshold, uncapped. Fast single-stage detection latency/FPS baseline.
+- **Architecture B (single-stage baseline):** camera frame -> a separately-trained YOLO-nano
+  object detector (same dataset, no cascade) -> all boxes above threshold, uncapped, conf 0.25 /
+  iou 0.5. The fast single-model detection latency/FPS/thermal baseline.
 - **Architecture A (4-stage cascade):** reproduces the reference batch-video pipeline exactly:
   1. ROI YOLO on the full frame, conf 0.25 / iou 0.5, **top-1 box only**.
   2. Crop that ROI, run PA YOLO on the crop, conf 0.10 / iou 0.5, up to 100 boxes.
@@ -38,7 +39,7 @@ Android_CV_test/
 │           │   ├── Detection.kt           # box + kind (ROI/FIBER) + label + confidence
 │           │   ├── ImageUtils.kt          # ImageProxy -> Bitmap (YUV_420_888 -> NV21), crop
 │           │   ├── YoloDetector.kt        # ONNX Runtime YOLO wrapper, letterbox + NMS, reused
-│           │   │                          #   for both the ROI and PA stages
+│           │   │                          #   for the ROI/PA stages and Architecture B's model
 │           │   ├── AsbestosClassifier.kt  # binary + subtype ResNet cascade with thresholds
 │           │   └── InferenceManager.kt    # A/B routing + cascade wiring, System.nanoTime() timing
 │           ├── telemetry/
@@ -69,13 +70,14 @@ to generate `gradlew`/`gradlew.bat`, then `./gradlew assembleDebug`.
 
 ## Adding your model weights
 
-The app expects four ONNX models in `app/src/main/assets/models/` (gitignored — see the README
+The app expects five ONNX models in `app/src/main/assets/models/` (gitignored — see the README
 there for export commands, thresholds, and expected input shapes):
 
-- `roi_detector.onnx` — from `cement_roi_model.pt`, used by both architectures
-- `pa_detector.onnx` — from `pa_detector.pt`, used only by Architecture A
-- `resnet_binary.onnx` — from `resnet_A_NA_best.pt` (2-class), used only by Architecture A
-- `resnet_subtype.onnx` — from `resnet_A_3class_best.pt` (3-class), used only by Architecture A
+- `roi_detector.onnx` — from `cement_roi_model.pt`, Architecture A's ROI stage
+- `pa_detector.onnx` — from `pa_detector.pt`, Architecture A's PA stage
+- `resnet_binary.onnx` — from `resnet_A_NA_best.pt` (2-class), Architecture A's binary stage
+- `resnet_subtype.onnx` — from `resnet_A_3class_best.pt` (3-class), Architecture A's subtype stage
+- `yolo_nano_detector.onnx` — Architecture B's standalone, separately-trained detector
 
 `YoloDetector` assumes Ultralytics' standard detect-head export
 (`[1, 4+numClasses, numAnchors]`, no objectness channel). `AsbestosClassifier` assumes plain

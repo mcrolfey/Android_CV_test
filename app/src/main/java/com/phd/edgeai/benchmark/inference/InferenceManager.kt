@@ -22,14 +22,16 @@ data class InferenceResult(
  *     -> crop -> PA YOLO (up to 100, conf 0.10/iou 0.5) on the ROI crop
  *       -> crop each PA box -> binary ResNet (threshold 0.4) -> subtype ResNet (min conf 0.25)
  *
- * Architecture B is the standalone ROI detector only, uncapped, as the fast single-stage
- * detection baseline described in the original spec.
+ * Architecture B is a separately-trained, single-stage YOLO-nano object detector (same dataset,
+ * no cascade) -- the point of the app is comparing this single model's on-device latency/FPS/
+ * thermal behavior directly against Architecture A's 4-stage pipeline.
  */
 class InferenceManager(context: Context) {
 
     private val roiDetector = YoloDetector(
         context,
         modelAssetPath = "models/roi_detector.onnx",
+        labels = listOf("roi"),
         confThreshold = 0.25f,
         iouThreshold = 0.5f
     )
@@ -37,7 +39,18 @@ class InferenceManager(context: Context) {
     private val paDetector = YoloDetector(
         context,
         modelAssetPath = "models/pa_detector.onnx",
+        labels = listOf("pa"),
         confThreshold = 0.10f,
+        iouThreshold = 0.5f
+    )
+
+    // Assumes this model outputs the same final classes Architecture A's cascade produces
+    // (same training dataset). Update the label list here if its class order/names differ.
+    private val architectureBDetector = YoloDetector(
+        context,
+        modelAssetPath = "models/yolo_nano_detector.onnx",
+        labels = listOf("NA-OF", "A-AM", "A-C", "A-CRO"),
+        confThreshold = 0.25f,
         iouThreshold = 0.5f
     )
 
@@ -61,12 +74,13 @@ class InferenceManager(context: Context) {
     fun close() {
         roiDetector.close()
         paDetector.close()
+        architectureBDetector.close()
         classifier.close()
     }
 
     private fun runArchitectureB(bitmap: Bitmap): List<Detection> {
-        return roiDetector.detect(bitmap).map {
-            Detection(it.boundingBox, DetectionKind.ROI, "ROI", it.confidence)
+        return architectureBDetector.detect(bitmap).map {
+            Detection(it.boundingBox, DetectionKind.FIBER, it.label, it.confidence)
         }
     }
 
