@@ -7,7 +7,11 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Matrix
+import android.graphics.Paint
 import android.graphics.RectF
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.nio.FloatBuffer
 import kotlin.math.max
 import kotlin.math.min
@@ -20,6 +24,11 @@ data class RawDetection(val boundingBox: RectF, val confidence: Float, val class
  * (cement_roi_model), the PA stage (pa_detector), and Architecture B's independently-trained
  * YOLO-nano model -- each call site supplies its own labels, conf/iou thresholds, and
  * maxDetections (ROI: conf 0.25, iou 0.5, top-1; PA: conf 0.10, iou 0.5, up to 100).
+ *
+ * Preprocessing reuses a fixed inputSize x inputSize letterbox bitmap/canvas/pixel buffer and a
+ * single direct FloatBuffer across calls instead of allocating fresh ones every frame -- on
+ * Android those repeated large allocations otherwise trigger frequent GC pauses that show up as
+ * uneven frame latency.
  */
 class YoloDetector(
     context: Context,
@@ -32,19 +41,31 @@ class YoloDetector(
     private val ortEnv: OrtEnvironment = OrtEnvironment.getEnvironment()
     private val session: OrtSession
 
+    private val channelSize = inputSize * inputSize
+    private val letterboxBitmap = Bitmap.createBitmap(inputSize, inputSize, Bitmap.Config.ARGB_8888)
+    private val letterboxCanvas = Canvas(letterboxBitmap)
+    private val letterboxPaint = Paint(Paint.FILTER_BITMAP_FLAG)
+    private val letterboxMatrix = Matrix()
+    private val pixels = IntArray(channelSize)
+    private val inputBuffer: FloatBuffer = ByteBuffer
+        .allocateDirect(3 * channelSize * 4)
+        .order(ByteOrder.nativeOrder())
+        .asFloatBuffer()
+    private val inputShape = longArrayOf(1, 3, inputSize.toLong(), inputSize.toLong())
+
     init {
         val modelBytes = context.assets.open(modelAssetPath).readBytes()
         session = ortEnv.createSession(modelBytes, OrtSession.SessionOptions())
     }
 
     fun detect(bitmap: Bitmap, maxDetections: Int = Int.MAX_VALUE): List<RawDetection> {
-        val preprocessed = preprocess(bitmap)
-        preprocessed.tensor.use { tensor ->
+        val (scale, padX, padY) = preprocess(bitmap)
+        OnnxTensor.createTensor(ortEnv, inputBuffer, inputShape).use { tensor ->
             val inputName = session.inputNames.iterator().next()
             session.run(mapOf(inputName to tensor)).use { results ->
                 @Suppress("UNCHECKED_CAST")
                 val rawOutput = results[0].value as Array<Array<FloatArray>>
-                val detections = postprocess(rawOutput, preprocessed, bitmap.width, bitmap.height)
+                val detections = postprocess(rawOutput, scale, padX, padY, bitmap.width, bitmap.height)
                 return detections.take(maxDetections)
             }
         }
@@ -54,49 +75,40 @@ class YoloDetector(
         session.close()
     }
 
-    private data class Preprocessed(val tensor: OnnxTensor, val scale: Float, val padX: Float, val padY: Float)
+    private data class LetterboxParams(val scale: Float, val padX: Float, val padY: Float)
 
-    private fun preprocess(bitmap: Bitmap): Preprocessed {
+    private fun preprocess(bitmap: Bitmap): LetterboxParams {
         val scale = min(inputSize.toFloat() / bitmap.width, inputSize.toFloat() / bitmap.height)
-        val scaledW = (bitmap.width * scale).toInt().coerceAtLeast(1)
-        val scaledH = (bitmap.height * scale).toInt().coerceAtLeast(1)
+        val scaledW = bitmap.width * scale
+        val scaledH = bitmap.height * scale
         val padX = (inputSize - scaledW) / 2f
         val padY = (inputSize - scaledH) / 2f
 
-        val resized = Bitmap.createScaledBitmap(bitmap, scaledW, scaledH, true)
-        val letterboxed = Bitmap.createBitmap(inputSize, inputSize, Bitmap.Config.ARGB_8888)
-        Canvas(letterboxed).apply {
-            drawColor(Color.rgb(114, 114, 114))
-            drawBitmap(resized, padX, padY, null)
-        }
+        letterboxMatrix.reset()
+        letterboxMatrix.postScale(scale, scale)
+        letterboxMatrix.postTranslate(padX, padY)
 
-        val channelSize = inputSize * inputSize
-        val pixels = IntArray(channelSize)
-        letterboxed.getPixels(pixels, 0, inputSize, 0, 0, inputSize, inputSize)
+        letterboxCanvas.drawColor(Color.rgb(114, 114, 114))
+        letterboxCanvas.drawBitmap(bitmap, letterboxMatrix, letterboxPaint)
 
-        val rArr = FloatArray(channelSize)
-        val gArr = FloatArray(channelSize)
-        val bArr = FloatArray(channelSize)
-        for (i in pixels.indices) {
+        letterboxBitmap.getPixels(pixels, 0, inputSize, 0, 0, inputSize, inputSize)
+
+        inputBuffer.clear()
+        for (i in 0 until channelSize) {
             val p = pixels[i]
-            rArr[i] = ((p shr 16) and 0xFF) / 255f
-            gArr[i] = ((p shr 8) and 0xFF) / 255f
-            bArr[i] = (p and 0xFF) / 255f
+            inputBuffer.put(i, ((p shr 16) and 0xFF) / 255f)
+            inputBuffer.put(channelSize + i, ((p shr 8) and 0xFF) / 255f)
+            inputBuffer.put(2 * channelSize + i, (p and 0xFF) / 255f)
         }
 
-        val buffer = FloatBuffer.allocate(3 * channelSize)
-        buffer.put(rArr)
-        buffer.put(gArr)
-        buffer.put(bArr)
-        buffer.rewind()
-
-        val shape = longArrayOf(1, 3, inputSize.toLong(), inputSize.toLong())
-        return Preprocessed(OnnxTensor.createTensor(ortEnv, buffer, shape), scale, padX, padY)
+        return LetterboxParams(scale, padX, padY)
     }
 
     private fun postprocess(
         output: Array<Array<FloatArray>>,
-        pre: Preprocessed,
+        scale: Float,
+        padX: Float,
+        padY: Float,
         origWidth: Int,
         origHeight: Int
     ): List<RawDetection> {
@@ -122,10 +134,10 @@ class YoloDetector(
             val w = predictions[2][i]
             val h = predictions[3][i]
 
-            val left = (cx - w / 2f - pre.padX) / pre.scale
-            val top = (cy - h / 2f - pre.padY) / pre.scale
-            val right = (cx + w / 2f - pre.padX) / pre.scale
-            val bottom = (cy + h / 2f - pre.padY) / pre.scale
+            val left = (cx - w / 2f - padX) / scale
+            val top = (cy - h / 2f - padY) / scale
+            val right = (cx + w / 2f - padX) / scale
+            val bottom = (cy + h / 2f - padY) / scale
 
             candidates.add(
                 RawDetection(

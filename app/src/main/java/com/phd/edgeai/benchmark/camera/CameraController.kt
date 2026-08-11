@@ -1,10 +1,13 @@
 package com.phd.edgeai.benchmark.camera
 
 import android.content.Context
+import android.util.Size
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
@@ -27,6 +30,12 @@ import java.util.concurrent.atomic.AtomicLong
  * Dispatchers.Default, and reports per-frame results/metrics back to the UI layer.
  * STRATEGY_KEEP_ONLY_LATEST drops backed-up frames instead of queueing, so FPS/latency numbers
  * reflect true inference throughput rather than an analyzer backlog.
+ *
+ * The analysis stream is capped at ANALYSIS_TARGET_RESOLUTION -- left unconstrained, CameraX
+ * defaults to a much larger frame (often close to full sensor resolution), which meant every
+ * frame paid for YUV conversion, letterboxing, and NMS over far more pixels than any of the
+ * models actually need, and made per-frame latency more sensitive to whatever resolution the
+ * device happened to pick.
  */
 class CameraController(
     private val context: Context,
@@ -48,6 +57,10 @@ class CameraController(
 
     private var cameraProvider: ProcessCameraProvider? = null
 
+    companion object {
+        private val ANALYSIS_TARGET_RESOLUTION = Size(1280, 720)
+    }
+
     fun start(previewView: PreviewView) {
         val providerFuture = ProcessCameraProvider.getInstance(context)
         providerFuture.addListener({
@@ -68,8 +81,15 @@ class CameraController(
             it.setSurfaceProvider(previewView.surfaceProvider)
         }
 
+        val resolutionSelector = ResolutionSelector.Builder()
+            .setResolutionStrategy(
+                ResolutionStrategy(ANALYSIS_TARGET_RESOLUTION, ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER)
+            )
+            .build()
+
         val imageAnalysis = ImageAnalysis.Builder()
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+            .setResolutionSelector(resolutionSelector)
             .build()
 
         imageAnalysis.setAnalyzer(ContextCompat.getMainExecutor(context)) { imageProxy ->

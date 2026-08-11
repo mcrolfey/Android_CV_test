@@ -12,6 +12,7 @@ data class BenchmarkUiState(
     val architecture: Architecture = Architecture.ARCHITECTURE_B_SINGLESTAGE,
     val detections: List<Detection> = emptyList(),
     val fps: Double = 0.0,
+    val displayFps: Double = 0.0,
     val latencyMs: Double = 0.0,
     val thermalState: String = "UNKNOWN",
     val memoryMb: Double = 0.0,
@@ -26,6 +27,11 @@ class BenchmarkViewModel : ViewModel() {
     private val _uiState = MutableStateFlow(BenchmarkUiState())
     val uiState: StateFlow<BenchmarkUiState> = _uiState.asStateFlow()
 
+    // Smoothed purely for the HUD readout -- FrameMetrics.fps (what CsvLogger writes) stays raw
+    // per-frame so the logged data still shows real frame-to-frame variance for analysis.
+    private var smoothedFps = 0.0
+    private val fpsSmoothingFactor = 0.2
+
     fun setArchitecture(architecture: Architecture) {
         _uiState.value = _uiState.value.copy(architecture = architecture)
     }
@@ -33,9 +39,14 @@ class BenchmarkViewModel : ViewModel() {
     fun updateFrame(detections: List<Detection>, metrics: FrameMetrics, frameWidth: Int, frameHeight: Int) {
         val current = _uiState.value
         val remaining = if (current.isStressTesting) (current.stressTestFramesRemaining - 1).coerceAtLeast(0) else 0
+
+        smoothedFps = if (smoothedFps == 0.0) metrics.fps
+        else smoothedFps + fpsSmoothingFactor * (metrics.fps - smoothedFps)
+
         _uiState.value = current.copy(
             detections = detections,
             fps = metrics.fps,
+            displayFps = smoothedFps,
             latencyMs = metrics.latencyMs,
             thermalState = metrics.thermalState,
             memoryMb = metrics.memoryMb,

@@ -5,6 +5,12 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Matrix
+import android.graphics.Paint
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.nio.FloatBuffer
 import kotlin.math.exp
 
 /**
@@ -15,6 +21,10 @@ import kotlin.math.exp
  *  2. Otherwise run the subtype model (3-class: A-AM=0, A-C=1, A-CRO=2). If its top confidence is
  *     below subtypeMinConfidence, fall back to the generic "A" label (confidence = P(A) from the
  *     binary stage); otherwise return the argmax subtype label.
+ *
+ * Reuses a fixed inputSize x inputSize scaling canvas, pixel buffer, and direct FloatBuffer across
+ * calls instead of allocating fresh ones per crop (see YoloDetector for why that matters on
+ * Android).
  */
 class AsbestosClassifier(
     context: Context,
@@ -33,6 +43,18 @@ class AsbestosClassifier(
 
     private val subtypeLabels = mapOf(0 to "A-AM", 1 to "A-C", 2 to "A-CRO")
 
+    private val channelSize = inputSize * inputSize
+    private val scaledBitmap = Bitmap.createBitmap(inputSize, inputSize, Bitmap.Config.ARGB_8888)
+    private val scaledCanvas = Canvas(scaledBitmap)
+    private val scalePaint = Paint(Paint.FILTER_BITMAP_FLAG)
+    private val scaleMatrix = Matrix()
+    private val pixels = IntArray(channelSize)
+    private val inputBuffer: FloatBuffer = ByteBuffer
+        .allocateDirect(3 * channelSize * 4)
+        .order(ByteOrder.nativeOrder())
+        .asFloatBuffer()
+    private val inputShape = longArrayOf(1, 3, inputSize.toLong(), inputSize.toLong())
+
     init {
         binarySession = ortEnv.createSession(context.assets.open(binaryModelAssetPath).readBytes(), OrtSession.SessionOptions())
         subtypeSession = ortEnv.createSession(context.assets.open(subtypeModelAssetPath).readBytes(), OrtSession.SessionOptions())
@@ -41,8 +63,8 @@ class AsbestosClassifier(
     data class ClassificationResult(val label: String, val confidence: Float)
 
     fun classify(bitmap: Bitmap): ClassificationResult {
-        val tensor = preprocess(bitmap)
-        try {
+        preprocess(bitmap)
+        OnnxTensor.createTensor(ortEnv, inputBuffer, inputShape).use { tensor ->
             val binaryProbs = runSoftmax(binarySession, tensor)
             val pA = binaryProbs[0]
             val pNa = binaryProbs[1]
@@ -65,8 +87,6 @@ class AsbestosClassifier(
             } else {
                 ClassificationResult(subtypeLabels.getValue(bestIdx), bestProb)
             }
-        } finally {
-            tensor.close()
         }
     }
 
@@ -84,32 +104,21 @@ class AsbestosClassifier(
         }
     }
 
-    // Bitmap.createScaledBitmap (bilinear) approximates but doesn't exactly match cv2's
-    // INTER_AREA resize used by the reference pipeline for downscaling crops to 224x224.
-    private fun preprocess(bitmap: Bitmap): OnnxTensor {
-        val resized = Bitmap.createScaledBitmap(bitmap, inputSize, inputSize, true)
-        val channelSize = inputSize * inputSize
-        val pixels = IntArray(channelSize)
-        resized.getPixels(pixels, 0, inputSize, 0, 0, inputSize, inputSize)
+    // Bitmap scaling here (bilinear) approximates but doesn't exactly match cv2's INTER_AREA
+    // resize used by the reference pipeline for downscaling crops to 224x224.
+    private fun preprocess(bitmap: Bitmap) {
+        scaleMatrix.reset()
+        scaleMatrix.setScale(inputSize.toFloat() / bitmap.width, inputSize.toFloat() / bitmap.height)
+        scaledCanvas.drawBitmap(bitmap, scaleMatrix, scalePaint)
+        scaledBitmap.getPixels(pixels, 0, inputSize, 0, 0, inputSize, inputSize)
 
-        val rArr = FloatArray(channelSize)
-        val gArr = FloatArray(channelSize)
-        val bArr = FloatArray(channelSize)
-        for (i in pixels.indices) {
+        inputBuffer.clear()
+        for (i in 0 until channelSize) {
             val p = pixels[i]
-            rArr[i] = (((p shr 16) and 0xFF) / 255f - mean[0]) / std[0]
-            gArr[i] = (((p shr 8) and 0xFF) / 255f - mean[1]) / std[1]
-            bArr[i] = ((p and 0xFF) / 255f - mean[2]) / std[2]
+            inputBuffer.put(i, (((p shr 16) and 0xFF) / 255f - mean[0]) / std[0])
+            inputBuffer.put(channelSize + i, (((p shr 8) and 0xFF) / 255f - mean[1]) / std[1])
+            inputBuffer.put(2 * channelSize + i, ((p and 0xFF) / 255f - mean[2]) / std[2])
         }
-
-        val buffer = java.nio.FloatBuffer.allocate(3 * channelSize)
-        buffer.put(rArr)
-        buffer.put(gArr)
-        buffer.put(bArr)
-        buffer.rewind()
-
-        val shape = longArrayOf(1, 3, inputSize.toLong(), inputSize.toLong())
-        return OnnxTensor.createTensor(ortEnv, buffer, shape)
     }
 
     private fun softmax(logits: FloatArray): FloatArray {

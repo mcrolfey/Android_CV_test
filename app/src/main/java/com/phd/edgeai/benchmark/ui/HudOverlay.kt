@@ -19,7 +19,7 @@ fun HudOverlay(uiState: BenchmarkUiState, modifier: Modifier = Modifier) {
                 .padding(8.dp)
         ) {
             Text("Architecture: ${uiState.architecture.label}", color = Color.White)
-            Text("FPS: %.1f".format(uiState.fps), color = Color.White)
+            Text("FPS: %.1f (inst. %.1f)".format(uiState.displayFps, uiState.fps), color = Color.White)
             Text("Latency: %.1f ms".format(uiState.latencyMs), color = Color.White)
             Text("Thermal: ${uiState.thermalState}", color = Color.White)
             Text("Memory: %.1f MB".format(uiState.memoryMb), color = Color.White)
