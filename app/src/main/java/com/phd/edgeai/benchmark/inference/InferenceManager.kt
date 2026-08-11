@@ -31,25 +31,27 @@ class InferenceManager(context: Context) {
     private val roiDetector = YoloDetector(
         context,
         modelAssetPath = "models/roi_detector.onnx",
-        labels = listOf("roi"),
+        labels = listOf("CS"),
+        inputSize = 640,
         confThreshold = 0.25f,
         iouThreshold = 0.5f
     )
 
+    // Trained/exported at imgsz=1024 (the YOLOm PA model), unlike the other 640-trained detectors.
     private val paDetector = YoloDetector(
         context,
         modelAssetPath = "models/pa_detector.onnx",
         labels = listOf("pa"),
+        inputSize = 1024,
         confThreshold = 0.10f,
         iouThreshold = 0.5f
     )
 
-    // Assumes this model outputs the same final classes Architecture A's cascade produces
-    // (same training dataset). Update the label list here if its class order/names differ.
     private val architectureBDetector = YoloDetector(
         context,
         modelAssetPath = "models/yolo_nano_detector.onnx",
-        labels = listOf("NA-OF", "A-AM", "A-C", "A-CRO"),
+        labels = listOf("A-AM", "A-CF", "A-COF", "A-CP", "A-CRO", "NA-CS", "NA-OF"),
+        inputSize = 640,
         confThreshold = 0.25f,
         iouThreshold = 0.5f
     )

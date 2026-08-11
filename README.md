@@ -70,14 +70,16 @@ to generate `gradlew`/`gradlew.bat`, then `./gradlew assembleDebug`.
 
 ## Adding your model weights
 
-The app expects five ONNX models in `app/src/main/assets/models/` (gitignored — see the README
-there for export commands, thresholds, and expected input shapes):
+The app expects five ONNX models in `app/src/main/assets/models/` (gitignored, along with the
+source `.pt` checkpoints — see the README there for exact export commands, thresholds, and
+confirmed input shapes):
 
-- `roi_detector.onnx` — from `cement_roi_model.pt`, Architecture A's ROI stage
-- `pa_detector.onnx` — from `pa_detector.pt`, Architecture A's PA stage
-- `resnet_binary.onnx` — from `resnet_A_NA_best.pt` (2-class), Architecture A's binary stage
-- `resnet_subtype.onnx` — from `resnet_A_3class_best.pt` (3-class), Architecture A's subtype stage
-- `yolo_nano_detector.onnx` — Architecture B's standalone, separately-trained detector
+- `roi_detector.onnx` — YOLO11n, 1 class, imgsz 640, Architecture A's ROI stage
+- `pa_detector.onnx` — YOLO11m, 1 class, **imgsz 1024**, Architecture A's PA stage
+- `resnet_binary.onnx` — ResNet-18, 2-class, Architecture A's binary stage
+- `resnet_subtype.onnx` — ResNet-18, 3-class, Architecture A's subtype stage
+- `yolo_nano_detector.onnx` — YOLO11n, **7 classes**, imgsz 640, Architecture B's standalone,
+  separately-trained detector
 
 `YoloDetector` assumes Ultralytics' standard detect-head export
 (`[1, 4+numClasses, numAnchors]`, no objectness channel). `AsbestosClassifier` assumes plain
