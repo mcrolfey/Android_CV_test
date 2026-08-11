@@ -22,11 +22,15 @@ object ImageUtils {
         return rotateBitmap(bitmap, imageProxy.imageInfo.rotationDegrees)
     }
 
-    fun cropBitmap(source: Bitmap, box: RectF): Bitmap {
-        val left = box.left.toInt().coerceIn(0, source.width - 1)
-        val top = box.top.toInt().coerceIn(0, source.height - 1)
-        val right = box.right.toInt().coerceIn(left + 1, source.width)
-        val bottom = box.bottom.toInt().coerceIn(top + 1, source.height)
+    // Mirrors the reference pipeline's crop_xyxy: clamps to bounds, returns null on a degenerate box.
+    fun cropBitmap(source: Bitmap, box: RectF): Bitmap? {
+        val w = source.width
+        val h = source.height
+        var left = box.left.toInt().coerceIn(0, w - 1)
+        var top = box.top.toInt().coerceIn(0, h - 1)
+        var right = box.right.toInt().coerceIn(0, w)
+        var bottom = box.bottom.toInt().coerceIn(0, h)
+        if (right <= left || bottom <= top) return null
         return Bitmap.createBitmap(source, left, top, right - left, bottom - top)
     }
 

@@ -9,6 +9,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import com.phd.edgeai.benchmark.inference.Detection
+import com.phd.edgeai.benchmark.inference.DetectionKind
 
 // Assumes PreviewView.ScaleType.FIT_CENTER so the analysis frame and this canvas share aspect ratio.
 @Composable
@@ -24,27 +25,25 @@ fun BoundingBoxOverlay(
         val scaleX = size.width / frameWidth.toFloat()
         val scaleY = size.height / frameHeight.toFloat()
 
-        val paint = android.graphics.Paint().apply {
-            color = android.graphics.Color.GREEN
-            textSize = 32f
-            isAntiAlias = true
-        }
-
         detections.forEach { detection ->
+            val color = if (detection.kind == DetectionKind.ROI) Color.Blue else Color.Red
+            val nativeColor = if (detection.kind == DetectionKind.ROI) {
+                android.graphics.Color.BLUE
+            } else {
+                android.graphics.Color.RED
+            }
+
             val box = detection.boundingBox
             val topLeft = Offset(box.left * scaleX, box.top * scaleY)
             val boxSize = Size((box.right - box.left) * scaleX, (box.bottom - box.top) * scaleY)
 
-            drawRect(color = Color.Green, topLeft = topLeft, size = boxSize, style = Stroke(width = 4f))
+            drawRect(color = color, topLeft = topLeft, size = boxSize, style = Stroke(width = 4f))
 
-            val label = buildString {
-                append(detection.roiLabel)
-                append(" %.0f%%".format(detection.roiConfidence * 100))
-                if (detection.classificationLabel != null) {
-                    append(" | ")
-                    append(detection.classificationLabel)
-                    append(" %.0f%%".format((detection.classificationConfidence ?: 0f) * 100))
-                }
+            val label = "${detection.label} %.2f".format(detection.confidence)
+            val paint = android.graphics.Paint().apply {
+                this.color = nativeColor
+                textSize = 32f
+                isAntiAlias = true
             }
 
             drawContext.canvas.nativeCanvas.drawText(

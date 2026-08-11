@@ -6,9 +6,16 @@ two vision pipelines, and logs every frame to a CSV for offline analysis.
 
 ## Architectures
 
-- **Architecture B (single-stage):** camera frame -> YOLOv11n -> bounding boxes + confidence.
-- **Architecture A (multi-stage ROI):** camera frame -> YOLOv11n ROI detector -> crop each box ->
-  ResNet classifier per crop -> combined boxes + classification labels.
+Both reuse the same ROI YOLO model; Architecture A adds the three downstream cascade stages.
+
+- **Architecture B (single-stage baseline):** camera frame -> ROI YOLO -> all boxes above
+  threshold, uncapped. Fast single-stage detection latency/FPS baseline.
+- **Architecture A (4-stage cascade):** reproduces the reference batch-video pipeline exactly:
+  1. ROI YOLO on the full frame, conf 0.25 / iou 0.5, **top-1 box only**.
+  2. Crop that ROI, run PA YOLO on the crop, conf 0.10 / iou 0.5, up to 100 boxes.
+  3. Crop each PA box, run the binary ResNet (A vs NA-OF). If P(A) < 0.4, label "NA-OF" and stop.
+  4. Otherwise run the subtype ResNet (A-AM / A-C / A-CRO). If its top confidence is below 0.25,
+     fall back to the generic "A" label; otherwise report the subtype.
 
 Toggle between them live from the on-screen control panel; the CSV log records which architecture
 produced each row.
@@ -22,17 +29,18 @@ Android_CV_test/
 │   ├── proguard-rules.pro
 │   └── src/main/
 │       ├── AndroidManifest.xml
-│       ├── assets/models/           # drop roi_detector.onnx / resnet_classifier.onnx here
+│       ├── assets/models/           # drop roi_detector.onnx / pa_detector.onnx / resnet_*.onnx here
 │       ├── res/values/              # strings.xml, themes.xml
 │       └── java/com/phd/edgeai/benchmark/
 │           ├── MainActivity.kt      # camera permission + Compose host
 │           ├── inference/
-│           │   ├── Architecture.kt      # A/B enum
-│           │   ├── Detection.kt         # box + ROI conf/label + optional classification
-│           │   ├── ImageUtils.kt        # ImageProxy -> Bitmap (YUV_420_888 -> NV21), crop
-│           │   ├── YoloDetector.kt      # ONNX Runtime YOLOv11 wrapper, letterbox + NMS
-│           │   ├── ResNetClassifier.kt  # ONNX Runtime ResNet wrapper for ROI crops
-│           │   └── InferenceManager.kt  # A/B routing, System.nanoTime() timing
+│           │   ├── Architecture.kt        # A/B enum
+│           │   ├── Detection.kt           # box + kind (ROI/FIBER) + label + confidence
+│           │   ├── ImageUtils.kt          # ImageProxy -> Bitmap (YUV_420_888 -> NV21), crop
+│           │   ├── YoloDetector.kt        # ONNX Runtime YOLO wrapper, letterbox + NMS, reused
+│           │   │                          #   for both the ROI and PA stages
+│           │   ├── AsbestosClassifier.kt  # binary + subtype ResNet cascade with thresholds
+│           │   └── InferenceManager.kt    # A/B routing + cascade wiring, System.nanoTime() timing
 │           ├── telemetry/
 │           │   ├── FrameMetrics.kt      # one CSV row
 │           │   ├── ThermalMonitor.kt    # PowerManager.getCurrentThermalStatus()
@@ -61,19 +69,21 @@ to generate `gradlew`/`gradlew.bat`, then `./gradlew assembleDebug`.
 
 ## Adding your model weights
 
-The app expects two ONNX models in `app/src/main/assets/models/` (gitignored — see the README
-there for export commands and expected input shapes):
+The app expects four ONNX models in `app/src/main/assets/models/` (gitignored — see the README
+there for export commands, thresholds, and expected input shapes):
 
-- `roi_detector.onnx` — YOLOv11n, used by both architectures
-- `resnet_classifier.onnx` — ResNet classifier, used only by Architecture A
+- `roi_detector.onnx` — from `cement_roi_model.pt`, used by both architectures
+- `pa_detector.onnx` — from `pa_detector.pt`, used only by Architecture A
+- `resnet_binary.onnx` — from `resnet_A_NA_best.pt` (2-class), used only by Architecture A
+- `resnet_subtype.onnx` — from `resnet_A_3class_best.pt` (3-class), used only by Architecture A
 
-`YoloDetector` and `ResNetClassifier` assume Ultralytics' standard detect-head export
-(`[1, 4+numClasses, numAnchors]`, no objectness channel) and a plain ImageNet-normalized
-classifier respectively. If your exports differ (class list, input size, normalization), update
-the constructor defaults in those two files.
+`YoloDetector` assumes Ultralytics' standard detect-head export
+(`[1, 4+numClasses, numAnchors]`, no objectness channel). `AsbestosClassifier` assumes plain
+ImageNet-normalized ResNet-18 exports. If your exports differ (class order, input size,
+normalization), update the constructor defaults in those two files.
 
 Swapping to PyTorch Mobile instead of ONNX Runtime means replacing the `ai.onnxruntime.*` calls in
-`YoloDetector`/`ResNetClassifier` with `org.pytorch.Module`/`Tensor` equivalents and the
+`YoloDetector`/`AsbestosClassifier` with `org.pytorch.Module`/`Tensor` equivalents and the
 `onnxruntime-android` dependency in `app/build.gradle.kts` with `org.pytorch:pytorch_android_lite`
 — the rest of the pipeline (`InferenceManager`, `CameraController`, telemetry, UI) is unaffected.
 

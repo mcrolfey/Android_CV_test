@@ -12,18 +12,21 @@ import java.nio.FloatBuffer
 import kotlin.math.max
 import kotlin.math.min
 
+data class RawDetection(val boundingBox: RectF, val confidence: Float)
+
 /**
- * Wraps a YOLOv11 ONNX export (Ultralytics detect head: output shape [1, 4+numClasses, numAnchors],
- * no separate objectness channel). Used standalone for Architecture B and as the ROI stage for
- * Architecture A.
+ * Wraps a single-stage YOLO ONNX export (Ultralytics detect head: output shape
+ * [1, 4+numClasses, numAnchors], no separate objectness channel). Reused for both the ROI stage
+ * (cement_roi_model) and the PA stage (pa_detector) in Architecture A, and standalone for
+ * Architecture B -- each call site supplies its own conf/iou thresholds and maxDetections to
+ * match the reference pipeline (ROI: conf 0.25, iou 0.5, top-1; PA: conf 0.10, iou 0.5, up to 100).
  */
 class YoloDetector(
     context: Context,
-    modelAssetPath: String = "models/roi_detector.onnx",
-    private val labels: List<String> = listOf("asbestos"),
+    modelAssetPath: String,
     private val inputSize: Int = 640,
     private val confThreshold: Float = 0.25f,
-    private val iouThreshold: Float = 0.45f
+    private val iouThreshold: Float = 0.5f
 ) {
     private val ortEnv: OrtEnvironment = OrtEnvironment.getEnvironment()
     private val session: OrtSession
@@ -33,14 +36,15 @@ class YoloDetector(
         session = ortEnv.createSession(modelBytes, OrtSession.SessionOptions())
     }
 
-    fun detect(bitmap: Bitmap): List<Detection> {
+    fun detect(bitmap: Bitmap, maxDetections: Int = Int.MAX_VALUE): List<RawDetection> {
         val preprocessed = preprocess(bitmap)
         preprocessed.tensor.use { tensor ->
             val inputName = session.inputNames.iterator().next()
             session.run(mapOf(inputName to tensor)).use { results ->
                 @Suppress("UNCHECKED_CAST")
                 val rawOutput = results[0].value as Array<Array<FloatArray>>
-                return postprocess(rawOutput, preprocessed, bitmap.width, bitmap.height)
+                val detections = postprocess(rawOutput, preprocessed, bitmap.width, bitmap.height)
+                return detections.take(maxDetections)
             }
         }
     }
@@ -94,21 +98,17 @@ class YoloDetector(
         pre: Preprocessed,
         origWidth: Int,
         origHeight: Int
-    ): List<Detection> {
+    ): List<RawDetection> {
         val predictions = output[0]
         val numClasses = predictions.size - 4
         val numAnchors = predictions[0].size
 
-        val candidates = mutableListOf<Detection>()
+        val candidates = mutableListOf<RawDetection>()
         for (i in 0 until numAnchors) {
-            var bestClassId = -1
             var bestScore = 0f
             for (c in 0 until numClasses) {
                 val score = predictions[4 + c][i]
-                if (score > bestScore) {
-                    bestScore = score
-                    bestClassId = c
-                }
+                if (score > bestScore) bestScore = score
             }
             if (bestScore < confThreshold) continue
 
@@ -123,25 +123,25 @@ class YoloDetector(
             val bottom = (cy + h / 2f - pre.padY) / pre.scale
 
             candidates.add(
-                Detection(
+                RawDetection(
                     boundingBox = RectF(
                         left.coerceIn(0f, origWidth.toFloat()),
                         top.coerceIn(0f, origHeight.toFloat()),
                         right.coerceIn(0f, origWidth.toFloat()),
                         bottom.coerceIn(0f, origHeight.toFloat())
                     ),
-                    roiConfidence = bestScore,
-                    roiClassId = bestClassId,
-                    roiLabel = labels.getOrElse(bestClassId) { "class_$bestClassId" }
+                    confidence = bestScore
                 )
             )
         }
+        // Sorted descending by confidence, so take(maxDetections) upstream reproduces
+        // Ultralytics' post-NMS max_det truncation (e.g. top-1 for the ROI stage).
         return nonMaxSuppression(candidates)
     }
 
-    private fun nonMaxSuppression(detections: List<Detection>): List<Detection> {
-        val sorted = detections.sortedByDescending { it.roiConfidence }.toMutableList()
-        val kept = mutableListOf<Detection>()
+    private fun nonMaxSuppression(detections: List<RawDetection>): List<RawDetection> {
+        val sorted = detections.sortedByDescending { it.confidence }.toMutableList()
+        val kept = mutableListOf<RawDetection>()
         while (sorted.isNotEmpty()) {
             val best = sorted.removeAt(0)
             kept.add(best)
