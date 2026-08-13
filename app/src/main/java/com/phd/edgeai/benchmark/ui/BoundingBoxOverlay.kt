@@ -10,8 +10,8 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import com.phd.edgeai.benchmark.inference.Detection
 import com.phd.edgeai.benchmark.inference.DetectionKind
+import kotlin.math.min
 
-// Assumes PreviewView.ScaleType.FIT_CENTER so the analysis frame and this canvas share aspect ratio.
 @Composable
 fun BoundingBoxOverlay(
     detections: List<Detection>,
@@ -22,8 +22,14 @@ fun BoundingBoxOverlay(
     if (frameWidth == 0 || frameHeight == 0) return
 
     Canvas(modifier = modifier) {
-        val scaleX = size.width / frameWidth.toFloat()
-        val scaleY = size.height / frameHeight.toFloat()
+        // PreviewView.ScaleType.FIT_CENTER is a "contain" fit: uniform scale (the constraining
+        // axis is whichever leaves the other with slack), centered, with letterbox bars on the
+        // slack axis -- it does NOT stretch the frame to fill the view. Independent scaleX/scaleY
+        // (stretch-to-fill) only lines boxes up when the frame's aspect ratio happens to exactly
+        // match the view's, which is why they were drifting off the real content on-device.
+        val scale = min(size.width / frameWidth, size.height / frameHeight)
+        val offsetX = (size.width - frameWidth * scale) / 2f
+        val offsetY = (size.height - frameHeight * scale) / 2f
 
         detections.forEach { detection ->
             val color = if (detection.kind == DetectionKind.ROI) Color.Blue else Color.Red
@@ -34,8 +40,8 @@ fun BoundingBoxOverlay(
             }
 
             val box = detection.boundingBox
-            val topLeft = Offset(box.left * scaleX, box.top * scaleY)
-            val boxSize = Size((box.right - box.left) * scaleX, (box.bottom - box.top) * scaleY)
+            val topLeft = Offset(offsetX + box.left * scale, offsetY + box.top * scale)
+            val boxSize = Size((box.right - box.left) * scale, (box.bottom - box.top) * scale)
 
             drawRect(color = color, topLeft = topLeft, size = boxSize, style = Stroke(width = 4f))
 
