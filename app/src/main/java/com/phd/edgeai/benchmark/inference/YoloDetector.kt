@@ -10,6 +10,7 @@ import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.RectF
+import android.util.Log
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
@@ -40,6 +41,7 @@ class YoloDetector(
 ) {
     private val ortEnv: OrtEnvironment = OrtEnvironment.getEnvironment()
     private val session: OrtSession
+    private val logTag = "Yolo:" + modelAssetPath.substringAfterLast('/')
 
     private val channelSize = inputSize * inputSize
     private val letterboxBitmap = Bitmap.createBitmap(inputSize, inputSize, Bitmap.Config.ARGB_8888)
@@ -116,6 +118,8 @@ class YoloDetector(
         val numClasses = predictions.size - 4
         val numAnchors = predictions[0].size
 
+        var maxScoreSeen = 0f
+        var maxScoreClassId = -1
         val candidates = mutableListOf<RawDetection>()
         for (i in 0 until numAnchors) {
             var bestClassId = -1
@@ -126,6 +130,10 @@ class YoloDetector(
                     bestScore = score
                     bestClassId = c
                 }
+            }
+            if (bestScore > maxScoreSeen) {
+                maxScoreSeen = bestScore
+                maxScoreClassId = bestClassId
             }
             if (bestScore < confThreshold) continue
 
@@ -153,6 +161,15 @@ class YoloDetector(
                 )
             )
         }
+
+        val topLabel = labels.getOrElse(maxScoreClassId) { "class_$maxScoreClassId" }
+        Log.d(
+            logTag,
+            "maxScore=%.3f (%s) threshold=%.2f aboveThreshold=%d/%d".format(
+                maxScoreSeen, topLabel, confThreshold, candidates.size, numAnchors
+            )
+        )
+
         // Sorted descending by confidence, so take(maxDetections) upstream reproduces
         // Ultralytics' post-NMS max_det truncation (e.g. top-1 for the ROI stage).
         return nonMaxSuppression(candidates)
