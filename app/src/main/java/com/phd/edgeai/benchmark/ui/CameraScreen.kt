@@ -5,6 +5,7 @@ import androidx.camera.view.PreviewView
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -45,6 +46,16 @@ fun BenchmarkScreen(viewModel: BenchmarkViewModel = viewModel()) {
     cameraController.currentArchitecture = uiState.architecture
     cameraController.isLogging = uiState.isStressTesting
 
+    // Closes the CSV file whenever a run ends, whether that's the user tapping "Stop Stress
+    // Test" or the frame countdown reaching zero on its own -- previously only the button press
+    // called csvLogger.stop(), so a run that finished by frame count left the logger's isRunning
+    // flag stuck true and silently broke every subsequent "Start Stress Test" press.
+    LaunchedEffect(uiState.isStressTesting) {
+        if (!uiState.isStressTesting) {
+            csvLogger.stop()
+        }
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         AndroidView(
             modifier = Modifier.fillMaxSize(),
@@ -77,7 +88,6 @@ fun BenchmarkScreen(viewModel: BenchmarkViewModel = viewModel()) {
                 viewModel.startStressTest(frameCount)
             },
             onStopStressTest = {
-                csvLogger.stop()
                 viewModel.stopStressTest()
             },
             modifier = Modifier.fillMaxSize()
