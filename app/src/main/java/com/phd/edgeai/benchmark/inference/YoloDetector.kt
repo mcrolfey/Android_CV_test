@@ -30,6 +30,12 @@ data class RawDetection(val boundingBox: RectF, val confidence: Float, val class
  * single direct FloatBuffer across calls instead of allocating fresh ones every frame -- on
  * Android those repeated large allocations otherwise trigger frequent GC pauses that show up as
  * uneven frame latency.
+ *
+ * Tries to enable the NNAPI execution provider so supported ops run on the device's GPU/DSP/NPU
+ * instead of ONNX Runtime's plain CPU EP -- without it, Android has no hardware acceleration path
+ * at all here, unlike an iOS build running the same models through CoreML (which gets Neural
+ * Engine acceleration by default). ORT partitions unsupported ops back to CPU automatically, and
+ * this falls back to CPU-only entirely if NNAPI itself isn't available on the device.
  */
 class YoloDetector(
     context: Context,
@@ -57,7 +63,13 @@ class YoloDetector(
 
     init {
         val modelBytes = context.assets.open(modelAssetPath).readBytes()
-        session = ortEnv.createSession(modelBytes, OrtSession.SessionOptions())
+        val options = OrtSession.SessionOptions()
+        try {
+            options.addNnapi()
+        } catch (e: Exception) {
+            Log.w(logTag, "NNAPI execution provider unavailable, falling back to CPU", e)
+        }
+        session = ortEnv.createSession(modelBytes, options)
     }
 
     fun detect(bitmap: Bitmap, maxDetections: Int = Int.MAX_VALUE): List<RawDetection> {

@@ -17,6 +17,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.phd.edgeai.benchmark.camera.CameraController
 import com.phd.edgeai.benchmark.inference.InferenceManager
 import com.phd.edgeai.benchmark.telemetry.CsvLogger
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Composable
 fun BenchmarkScreen(viewModel: BenchmarkViewModel = viewModel()) {
@@ -53,6 +55,14 @@ fun BenchmarkScreen(viewModel: BenchmarkViewModel = viewModel()) {
     LaunchedEffect(uiState.isStressTesting) {
         if (!uiState.isStressTesting) {
             csvLogger.stop()
+        }
+    }
+
+    // Runs once per screen instance, off the main thread, so switching architectures later
+    // doesn't pay each model's first-call setup cost mid-session (see InferenceManager.warmUp).
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.Default) {
+            inferenceManager.warmUp()
         }
     }
 

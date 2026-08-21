@@ -8,6 +8,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Matrix
 import android.graphics.Paint
+import android.util.Log
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
@@ -56,8 +57,20 @@ class AsbestosClassifier(
     private val inputShape = longArrayOf(1, 3, inputSize.toLong(), inputSize.toLong())
 
     init {
-        binarySession = ortEnv.createSession(context.assets.open(binaryModelAssetPath).readBytes(), OrtSession.SessionOptions())
-        subtypeSession = ortEnv.createSession(context.assets.open(subtypeModelAssetPath).readBytes(), OrtSession.SessionOptions())
+        binarySession = ortEnv.createSession(context.assets.open(binaryModelAssetPath).readBytes(), accelerated())
+        subtypeSession = ortEnv.createSession(context.assets.open(subtypeModelAssetPath).readBytes(), accelerated())
+    }
+
+    // See YoloDetector for why: gives Android a hardware-acceleration path comparable to iOS's
+    // CoreML/Neural Engine instead of running everything on ONNX Runtime's plain CPU EP.
+    private fun accelerated(): OrtSession.SessionOptions {
+        val options = OrtSession.SessionOptions()
+        try {
+            options.addNnapi()
+        } catch (e: Exception) {
+            Log.w("AsbestosClassifier", "NNAPI execution provider unavailable, falling back to CPU", e)
+        }
+        return options
     }
 
     data class ClassificationResult(val label: String, val confidence: Float)

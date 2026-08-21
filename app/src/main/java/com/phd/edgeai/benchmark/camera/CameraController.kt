@@ -2,10 +2,12 @@ package com.phd.edgeai.benchmark.camera
 
 import android.content.Context
 import android.util.Size
+import androidx.camera.core.AspectRatio
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -36,6 +38,12 @@ import java.util.concurrent.atomic.AtomicLong
  * frame paid for YUV conversion, letterboxing, and NMS over far more pixels than any of the
  * models actually need, and made per-frame latency more sensitive to whatever resolution the
  * device happened to pick.
+ *
+ * Preview and ImageAnalysis are both pinned to the same 16:9 AspectRatioStrategy. Left
+ * unconstrained, Preview and ImageAnalysis can each land on a different native aspect ratio (e.g.
+ * Preview matching the device's tall screen, Analysis at 1280x720), which crops the sensor
+ * differently for what you see vs what gets analyzed -- so even correct on-screen scaling math
+ * would still draw boxes over a slightly different field of view than the one actually shown.
  */
 class CameraController(
     private val context: Context,
@@ -77,11 +85,19 @@ class CameraController(
     private fun bindUseCases(provider: ProcessCameraProvider, previewView: PreviewView) {
         provider.unbindAll()
 
-        val preview = Preview.Builder().build().also {
-            it.setSurfaceProvider(previewView.surfaceProvider)
-        }
+        val aspectRatioStrategy = AspectRatioStrategy(AspectRatio.RATIO_16_9, AspectRatioStrategy.FALLBACK_RULE_AUTO)
 
-        val resolutionSelector = ResolutionSelector.Builder()
+        val previewResolutionSelector = ResolutionSelector.Builder()
+            .setAspectRatioStrategy(aspectRatioStrategy)
+            .build()
+
+        val preview = Preview.Builder()
+            .setResolutionSelector(previewResolutionSelector)
+            .build()
+            .also { it.setSurfaceProvider(previewView.surfaceProvider) }
+
+        val analysisResolutionSelector = ResolutionSelector.Builder()
+            .setAspectRatioStrategy(aspectRatioStrategy)
             .setResolutionStrategy(
                 ResolutionStrategy(ANALYSIS_TARGET_RESOLUTION, ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER)
             )
@@ -89,7 +105,7 @@ class CameraController(
 
         val imageAnalysis = ImageAnalysis.Builder()
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-            .setResolutionSelector(resolutionSelector)
+            .setResolutionSelector(analysisResolutionSelector)
             .build()
 
         imageAnalysis.setAnalyzer(ContextCompat.getMainExecutor(context)) { imageProxy ->

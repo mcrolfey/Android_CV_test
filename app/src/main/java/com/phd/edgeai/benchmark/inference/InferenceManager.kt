@@ -3,6 +3,7 @@ package com.phd.edgeai.benchmark.inference
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.RectF
+import android.util.Log
 import androidx.camera.core.ImageProxy
 
 data class InferenceResult(
@@ -57,6 +58,29 @@ class InferenceManager(context: Context) {
     )
 
     private val classifier = AsbestosClassifier(context)
+
+    /**
+     * Runs one throwaway inference through every model on a blank frame. ONNX Runtime (and NNAPI
+     * underneath it) does lazy setup on a session's first real call -- memory arena growth, kernel
+     * selection, NNAPI compilation -- so without this, whichever detector/classifier hasn't been
+     * used yet pays that one-time cost on the first frame after switching architecture, which is
+     * exactly the stutter felt when flipping between Architecture A and B. Call once, off the main
+     * thread, before the user can interact with the architecture toggle.
+     */
+    fun warmUp() {
+        try {
+            val dummy640 = Bitmap.createBitmap(640, 640, Bitmap.Config.ARGB_8888)
+            val dummy1024 = Bitmap.createBitmap(1024, 1024, Bitmap.Config.ARGB_8888)
+            val dummy224 = Bitmap.createBitmap(224, 224, Bitmap.Config.ARGB_8888)
+
+            roiDetector.detect(dummy640, maxDetections = 1)
+            paDetector.detect(dummy1024, maxDetections = 100)
+            architectureBDetector.detect(dummy640)
+            classifier.classify(dummy224)
+        } catch (e: Exception) {
+            Log.w("InferenceManager", "Warm-up pass failed", e)
+        }
+    }
 
     fun runInference(imageProxy: ImageProxy, architecture: Architecture): InferenceResult {
         val startTime = System.nanoTime()
